@@ -298,4 +298,4 @@ app.listen(PORT, () => {
     console.log('   ✅ Logs detallados');
     console.log('   ✅ Mejor manejo de errores');
     console.log('====================================');
-}); Actualizar a v2.0 - Mejorar detección de gamepasses
+});Actualizar a v2.0 - Mejorar detección de gamepasses

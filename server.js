@@ -1,5 +1,5 @@
 // ====================================
-// API DE GAMEPASSES DE ROBLOX (VERSIÓN MEJORADA)
+// API DE GAMEPASSES DE ROBLOX - CON PAGINACIÓN COMPLETA
 // ====================================
 
 const express = require('express');
@@ -13,48 +13,135 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
-// Configuración de axios con timeout
-const axiosConfig = {
-    timeout: 10000,
-    headers: {
-        'User-Agent': 'Mozilla/5.0'
-    }
-};
-
 // ====================================
-// FUNCIONES AUXILIARES
+// FUNCIÓN: Obtener TODAS las experiencias de un usuario con paginación
 // ====================================
-
-// Función para hacer peticiones con reintentos
-async function fetchWithRetry(url, retries = 3) {
-    for (let i = 0; i < retries; i++) {
+async function getAllUserGames(userId) {
+    const allGames = [];
+    let cursor = null;
+    let pageNumber = 1;
+    
+    console.log(`📚 Obteniendo TODAS las experiencias del usuario ${userId}...`);
+    
+    do {
         try {
-            console.log(`📡 Intento ${i + 1}: ${url}`);
-            const response = await axios.get(url, axiosConfig);
-            return response;
+            const url = `https://games.roproxy.com/v2/users/${userId}/games?accessFilter=Public&limit=50&sortOrder=Asc${cursor ? `&cursor=${cursor}` : ''}`;
+            console.log(`   📄 Página ${pageNumber}: ${url}`);
+            
+            const response = await axios.get(url);
+            const data = response.data;
+            
+            if (data && data.data) {
+                allGames.push(...data.data);
+                console.log(`      ✅ Encontrados ${data.data.length} juegos en esta página (Total: ${allGames.length})`);
+            }
+            
+            // Obtener el cursor para la siguiente página
+            cursor = data.nextPageCursor;
+            pageNumber++;
+            
+            // Delay para no saturar la API
+            if (cursor) {
+                await new Promise(resolve => setTimeout(resolve, 200));
+            }
+            
         } catch (error) {
-            console.warn(`⚠️ Intento ${i + 1} falló:`, error.message);
-            if (i === retries - 1) throw error;
-            await new Promise(resolve => setTimeout(resolve, 1000 * (i + 1)));
+            console.error(`   ❌ Error en página ${pageNumber}:`, error.message);
+            break;
         }
+    } while (cursor); // Continuar mientras haya más páginas
+    
+    console.log(`📊 TOTAL DE JUEGOS ENCONTRADOS: ${allGames.length}`);
+    return allGames;
+}
+
+// ====================================
+// FUNCIÓN: Obtener gamepasses de un juego con múltiples métodos
+// ====================================
+async function getGamePasses(universeId, gameName) {
+    console.log(`📦 Buscando gamepasses del juego: ${gameName} (${universeId})`);
+    
+    let gamepassesData = null;
+    
+    // MÉTODO 1: Endpoint directo de Roblox
+    try {
+        const url = `https://games.roblox.com/v1/games/${universeId}/game-passes?sortOrder=Asc&limit=100`;
+        console.log(`   📡 Método 1: Endpoint directo`);
+        
+        const response = await axios.get(url, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0',
+                'Accept': 'application/json'
+            },
+            timeout: 5000
+        });
+        
+        gamepassesData = response.data;
+        console.log(`   ✅ Método 1 exitoso`);
+        
+    } catch (err) {
+        console.log(`   ⚠️ Método 1 falló: ${err.message}`);
+        
+        // MÉTODO 2: RoProxy (fallback)
+        try {
+            const url = `https://games.roproxy.com/v1/games/${universeId}/game-passes?sortOrder=Asc&limit=100`;
+            console.log(`   📡 Método 2: RoProxy`);
+            
+            const response = await axios.get(url, {
+                timeout: 5000
+            });
+            
+            gamepassesData = response.data;
+            console.log(`   ✅ Método 2 exitoso`);
+            
+        } catch (err2) {
+            console.log(`   ⚠️ Método 2 también falló: ${err2.message}`);
+            console.log(`   ❌ No se pudieron obtener gamepasses para este juego`);
+            return [];
+        }
+    }
+    
+    if (!gamepassesData || !gamepassesData.data || gamepassesData.data.length === 0) {
+        console.log(`   ℹ️ Este juego no tiene gamepasses`);
+        return [];
+    }
+    
+    console.log(`   📊 Encontrados ${gamepassesData.data.length} gamepasses`);
+    return gamepassesData.data;
+}
+
+// ====================================
+// FUNCIÓN: Obtener detalles de un gamepass (precio, etc)
+// ====================================
+async function getGamePassDetails(passId, passName) {
+    try {
+        const productUrl = `https://apis.roblox.com/game-passes/v1/game-passes/${passId}/product-info`;
+        const response = await axios.get(productUrl, {
+            timeout: 5000
+        });
+        
+        return response.data;
+    } catch (error) {
+        console.warn(`      ⚠️ No se pudieron obtener detalles de ${passName}: ${error.message}`);
+        return null;
     }
 }
 
 // ====================================
-// ENDPOINT PRINCIPAL: Gamepasses de los juegos de un usuario
+// ENDPOINT PRINCIPAL: Gamepasses de TODAS las experiencias de un usuario
 // ====================================
 app.get('/api/user/:userId/gamepasses', async (req, res) => {
     try {
         const userId = req.params.userId;
-        console.log('====================================');
-        console.log(`🔍 Buscando gamepasses para userId: ${userId}`);
-        console.log('====================================');
-
-        // PASO 1: Obtener todos los juegos del usuario
-        const gamesUrl = `https://games.roproxy.com/v2/users/${userId}/games?accessFilter=Public&limit=50&sortOrder=Asc`;
-        const gamesResponse = await fetchWithRetry(gamesUrl);
-
-        if (!gamesResponse.data || !gamesResponse.data.data || gamesResponse.data.data.length === 0) {
+        console.log('');
+        console.log('═══════════════════════════════════════════════════════');
+        console.log(`🔍 BUSCANDO GAMEPASSES PARA USUARIO: ${userId}`);
+        console.log('═══════════════════════════════════════════════════════');
+        
+        // PASO 1: Obtener TODAS las experiencias del usuario (con paginación)
+        const games = await getAllUserGames(userId);
+        
+        if (games.length === 0) {
             console.log('⚠️ Usuario no tiene juegos públicos');
             return res.json({
                 success: true,
@@ -64,115 +151,88 @@ app.get('/api/user/:userId/gamepasses', async (req, res) => {
                 message: 'Este usuario no tiene juegos públicos'
             });
         }
-
-        const games = gamesResponse.data.data;
-        console.log(`✅ Se encontraron ${games.length} juegos del usuario`);
         
-        // Mostrar detalles de cada juego
-        games.forEach((game, index) => {
-            console.log(`   ${index + 1}. ${game.name} (UniverseId: ${game.id})`);
-        });
-
+        console.log('');
+        console.log('═══════════════════════════════════════════════════════');
+        console.log(`🎮 PROCESANDO ${games.length} JUEGOS...`);
+        console.log('═══════════════════════════════════════════════════════');
+        
         // PASO 2: Obtener gamepasses de cada juego
         const allGamepasses = [];
-
-        for (const game of games) {
+        let gamesWithGamepasses = 0;
+        
+        for (let i = 0; i < games.length; i++) {
+            const game = games[i];
+            const universeId = game.id;
+            const gameName = game.name;
+            
+            console.log('');
+            console.log(`[${i + 1}/${games.length}] 🎮 Juego: ${gameName}`);
+            
             try {
-                const universeId = game.id;
-                const gameName = game.name;
+                // Obtener gamepasses del juego
+                const gamepasses = await getGamePasses(universeId, gameName);
                 
-                console.log(`\n📦 Procesando juego: ${gameName} (${universeId})`);
-
-                // Obtener gamepasses del juego con múltiples endpoints
-                let gamepassesData = null;
+                if (gamepasses.length === 0) {
+                    console.log(`   ℹ️ Sin gamepasses`);
+                    continue;
+                }
                 
-                // Intento 1: Endpoint principal
-                try {
-                    const url1 = `https://games.roproxy.com/v1/games/${universeId}/game-passes?limit=100&sortOrder=Asc`;
-                    const response1 = await fetchWithRetry(url1);
-                    gamepassesData = response1.data;
-                    console.log(`   ✅ Endpoint 1 exitoso: ${gamepassesData?.data?.length || 0} gamepasses encontrados`);
-                } catch (error1) {
-                    console.warn(`   ⚠️ Endpoint 1 falló, intentando alternativo...`);
+                gamesWithGamepasses++;
+                
+                // Obtener detalles de cada gamepass
+                for (const pass of gamepasses) {
+                    const details = await getGamePassDetails(pass.id, pass.name);
                     
-                    // Intento 2: Endpoint alternativo
-                    try {
-                        const url2 = `https://games.roblox.com/v1/games/${universeId}/game-passes?limit=100&sortOrder=Asc`;
-                        const response2 = await fetchWithRetry(url2);
-                        gamepassesData = response2.data;
-                        console.log(`   ✅ Endpoint 2 exitoso: ${gamepassesData?.data?.length || 0} gamepasses encontrados`);
-                    } catch (error2) {
-                        console.warn(`   ❌ Ambos endpoints fallaron para ${gameName}`);
-                    }
-                }
-
-                if (gamepassesData && gamepassesData.data && gamepassesData.data.length > 0) {
-                    const gamepasses = gamepassesData.data;
-                    console.log(`   📊 Procesando ${gamepasses.length} gamepasses...`);
+                    const gamepassInfo = {
+                        id: pass.id,
+                        name: pass.name,
+                        displayName: pass.displayName || pass.name,
+                        description: pass.description || '',
+                        iconImageId: pass.iconImageId,
+                        image: `https://tr.rbxcdn.com/game-pass-thumbnail/image?width=150&height=150&gamePassId=${pass.id}`,
+                        price: details ? (details.price || 0) : 0,
+                        priceInRobux: details ? (details.price || 0) : 0,
+                        isForSale: details ? (details.isForSale || false) : false,
+                        gameId: universeId,
+                        gameName: gameName
+                    };
                     
-                    // Obtener detalles de cada gamepass
-                    for (const pass of gamepasses) {
-                        try {
-                            console.log(`      🔸 Obteniendo detalles de: ${pass.name}`);
-                            
-                            // Intentar obtener precio del gamepass
-                            let price = 0;
-                            let isForSale = false;
-                            
-                            try {
-                                const detailsUrl = `https://apis.roproxy.com/game-passes/v1/game-passes/${pass.id}/product-info`;
-                                const detailsResponse = await fetchWithRetry(detailsUrl);
-                                const details = detailsResponse.data;
-                                price = details.price || 0;
-                                isForSale = details.isForSale || false;
-                                console.log(`         💰 Precio: ${price} R$ | En venta: ${isForSale}`);
-                            } catch (priceError) {
-                                console.warn(`         ⚠️ No se pudo obtener precio, usando valor por defecto`);
-                            }
-                            
-                            allGamepasses.push({
-                                id: pass.id,
-                                name: pass.name,
-                                displayName: pass.displayName || pass.name,
-                                description: pass.description || '',
-                                iconImageId: pass.iconImageId,
-                                image: `https://tr.rbxcdn.com/game-pass-thumbnail/image?width=150&height=150&gamePassId=${pass.id}`,
-                                price: price,
-                                priceInRobux: price,
-                                isForSale: isForSale,
-                                gameId: universeId,
-                                gameName: gameName
-                            });
-
-                            console.log(`         ✅ ${pass.name} agregado exitosamente`);
-                        } catch (detailError) {
-                            console.error(`         ❌ Error procesando gamepass ${pass.name}:`, detailError.message);
-                        }
-                    }
-                } else {
-                    console.log(`   ⚠️ No se encontraron gamepasses para ${gameName}`);
+                    allGamepasses.push(gamepassInfo);
+                    console.log(`      ✅ ${pass.name}: ${gamepassInfo.price} R$`);
+                    
+                    // Delay pequeño entre gamepasses
+                    await new Promise(resolve => setTimeout(resolve, 100));
                 }
+                
             } catch (gameError) {
-                console.error(`❌ Error procesando juego ${game.name}:`, gameError.message);
+                console.warn(`   ❌ Error procesando juego:`, gameError.message);
             }
+            
+            // Delay entre juegos para no saturar la API
+            await new Promise(resolve => setTimeout(resolve, 300));
         }
-
-        console.log('\n====================================');
-        console.log(`📊 RESULTADO FINAL:`);
-        console.log(`   Juegos encontrados: ${games.length}`);
-        console.log(`   Gamepasses totales: ${allGamepasses.length}`);
-        console.log('====================================\n');
+        
+        console.log('');
+        console.log('═══════════════════════════════════════════════════════');
+        console.log(`📊 RESUMEN FINAL:`);
+        console.log(`   🎮 Juegos analizados: ${games.length}`);
+        console.log(`   💎 Juegos con gamepasses: ${gamesWithGamepasses}`);
+        console.log(`   🎁 Total de gamepasses: ${allGamepasses.length}`);
+        console.log('═══════════════════════════════════════════════════════');
+        console.log('');
 
         res.json({
             success: true,
             gamepasses: allGamepasses,
             count: allGamepasses.length,
-            gamesCount: games.length
+            gamesCount: games.length,
+            gamesWithGamepasses: gamesWithGamepasses
         });
 
     } catch (error) {
-        console.error('❌ ERROR GENERAL en /api/user/:userId/gamepasses:', error.message);
-        console.error('Stack:', error.stack);
+        console.error('❌ ERROR CRÍTICO en /api/user/:userId/gamepasses:', error.message);
+        console.error(error.stack);
         res.status(500).json({
             success: false,
             error: error.message,
@@ -190,44 +250,36 @@ app.get('/api/gamepasses/:universeId', async (req, res) => {
         const universeId = req.params.universeId;
         console.log(`🎮 Buscando gamepasses del juego: ${universeId}`);
 
-        // Obtener gamepasses del juego
-        const gamepassesResponse = await fetchWithRetry(
-            `https://games.roproxy.com/v1/games/${universeId}/game-passes?limit=100&sortOrder=Asc`
-        );
-
-        if (!gamepassesResponse.data || !gamepassesResponse.data.data) {
+        const gamepassesData = await getGamePasses(universeId, `Game ${universeId}`);
+        
+        if (gamepassesData.length === 0) {
             return res.json({
                 success: true,
                 gamepasses: [],
-                count: 0
+                count: 0,
+                message: 'Este juego no tiene gamepasses'
             });
         }
 
         const gamepasses = [];
 
         // Obtener detalles de cada gamepass
-        for (const pass of gamepassesResponse.data.data) {
-            try {
-                const detailsResponse = await fetchWithRetry(
-                    `https://apis.roproxy.com/game-passes/v1/game-passes/${pass.id}/product-info`
-                );
-
-                const details = detailsResponse.data;
-                
-                gamepasses.push({
-                    id: pass.id,
-                    name: pass.name,
-                    displayName: pass.displayName || pass.name,
-                    description: pass.description || '',
-                    iconImageId: pass.iconImageId,
-                    image: `https://tr.rbxcdn.com/game-pass-thumbnail/image?width=150&height=150&gamePassId=${pass.id}`,
-                    price: details.price || 0,
-                    priceInRobux: details.price || 0,
-                    isForSale: details.isForSale || false
-                });
-            } catch (detailError) {
-                console.warn(`⚠️ Error obteniendo detalles del gamepass ${pass.id}`);
-            }
+        for (const pass of gamepassesData) {
+            const details = await getGamePassDetails(pass.id, pass.name);
+            
+            gamepasses.push({
+                id: pass.id,
+                name: pass.name,
+                displayName: pass.displayName || pass.name,
+                description: pass.description || '',
+                iconImageId: pass.iconImageId,
+                image: `https://tr.rbxcdn.com/game-pass-thumbnail/image?width=150&height=150&gamePassId=${pass.id}`,
+                price: details ? (details.price || 0) : 0,
+                priceInRobux: details ? (details.price || 0) : 0,
+                isForSale: details ? (details.isForSale || false) : false
+            });
+            
+            await new Promise(resolve => setTimeout(resolve, 100));
         }
 
         res.json({
@@ -248,33 +300,69 @@ app.get('/api/gamepasses/:universeId', async (req, res) => {
 });
 
 // ====================================
+// ENDPOINT DE TEST: Probar con un usuario específico
+// ====================================
+app.get('/test/:userId', async (req, res) => {
+    const userId = req.params.userId;
+    
+    try {
+        const games = await getAllUserGames(userId);
+        
+        res.json({
+            success: true,
+            userId: userId,
+            totalGames: games.length,
+            games: games.map(g => ({
+                id: g.id,
+                name: g.name,
+                created: g.created,
+                updated: g.updated
+            }))
+        });
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+
+// ====================================
 // ENDPOINT DE INFORMACIÓN
 // ====================================
 app.get('/', (req, res) => {
     res.json({
         name: 'API de Gamepasses de Roblox',
-        version: '2.0.0',
+        version: '2.0.0 - PAGINACIÓN COMPLETA',
         status: 'online',
+        features: [
+            '✅ Busca TODAS las experiencias del usuario (paginación automática)',
+            '✅ Múltiples métodos de fallback para obtener gamepasses',
+            '✅ Incluye información de precios',
+            '✅ Manejo robusto de errores',
+            '✅ Rate limiting automático'
+        ],
         endpoints: {
             userGamepasses: {
                 url: '/api/user/:userId/gamepasses',
                 method: 'GET',
-                description: 'Obtiene todos los gamepasses de los juegos de un usuario',
-                example: '/api/user/1558070382/gamepasses'
+                description: 'Obtiene TODOS los gamepasses de TODAS las experiencias de un usuario',
+                example: '/api/user/1558070382/gamepasses',
+                note: 'Usa paginación para obtener todas las experiencias, no solo las primeras 50'
             },
             gameGamepasses: {
                 url: '/api/gamepasses/:universeId',
                 method: 'GET',
                 description: 'Obtiene los gamepasses de un juego específico',
-                example: '/api/gamepasses/918484040462'
+                example: '/api/gamepasses/4246588339'
+            },
+            testUser: {
+                url: '/test/:userId',
+                method: 'GET',
+                description: 'Prueba rápida: ver todas las experiencias de un usuario',
+                example: '/test/1558070382'
             }
-        },
-        improvements: [
-            'Sistema de reintentos automáticos',
-            'Endpoints alternativos',
-            'Logs detallados para debugging',
-            'Mejor manejo de errores'
-        ]
+        }
     });
 });
 
@@ -282,20 +370,24 @@ app.get('/', (req, res) => {
 // INICIAR SERVIDOR
 // ====================================
 app.listen(PORT, () => {
-    console.log('====================================');
+    console.log('');
+    console.log('═══════════════════════════════════════════════════════');
     console.log('✅ API DE GAMEPASSES DE ROBLOX v2.0');
-    console.log('====================================');
+    console.log('═══════════════════════════════════════════════════════');
     console.log(`🚀 Servidor corriendo en puerto ${PORT}`);
     console.log(`📡 URL: http://localhost:${PORT}`);
     console.log('');
     console.log('📋 Endpoints disponibles:');
     console.log(`   GET /api/user/:userId/gamepasses`);
     console.log(`   GET /api/gamepasses/:universeId`);
+    console.log(`   GET /test/:userId`);
     console.log('');
-    console.log('🔧 Mejoras v2.0:');
-    console.log('   ✅ Sistema de reintentos (3 intentos)');
-    console.log('   ✅ Endpoints alternativos');
-    console.log('   ✅ Logs detallados');
+    console.log('🆕 CARACTERÍSTICAS v2.0:');
+    console.log('   ✅ Paginación automática (TODAS las experiencias)');
+    console.log('   ✅ Sistema de fallback en múltiples niveles');
+    console.log('   ✅ Logs detallados y coloridos');
+    console.log('   ✅ Rate limiting automático');
     console.log('   ✅ Mejor manejo de errores');
-    console.log('====================================');
-});Actualizar a v2.0 - Mejorar detección de gamepasses
+    console.log('═══════════════════════════════════════════════════════');
+    console.log('');
+});
